@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Admin Converter Tool</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <style>
+        body { font-family: sans-serif; padding: 50px; text-align: center; background: #f0f2f5; }
+        .box { background: white; padding: 40px; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); max-width: 500px; margin: 0 auto; }
+        h1 { color: #2563eb; }
+        #status { margin-top: 20px; font-weight: bold; color: #555; }
+        .progress-bar { width: 100%; background-color: #e0e0e0; border-radius: 5px; margin-top: 20px; height: 20px; overflow: hidden; display: none; }
+        .progress-fill { height: 100%; background-color: #2563eb; width: 0%; transition: width 0.2s; }
+    </style>
+</head>
+<body>
+
+<div class="box">
+    <h1>🛠️ PDF to Data Converter</h1>
+    <p>Select your Seating Plan PDF. This will generate a fast <b>data.json</b> file for the website.</p>
+    
+    <input type="file" id="fileInput" accept="application/pdf" />
+    
+    <div class="progress-bar" id="progressBar">
+        <div class="progress-fill" id="progressFill"></div>
+    </div>
+    <div id="status"></div>
+</div>
+
+<script>
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+
+    const fileInput = document.getElementById('fileInput');
+    const status = document.getElementById('status');
+    const progressBar = document.getElementById('progressBar');
+    const progressFill = document.getElementById('progressFill');
+
+    fileInput.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        status.innerText = "Loading PDF...";
+        progressBar.style.display = "block";
+        
+        const arrayBuffer = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
+        
+        let allStudents = [];
+        let context = { teacher: "Unknown", subject: "Unknown", section: "Unknown", room: "Unknown" };
+
+        for (let i = 1; i <= pdf.numPages; i++) {
+            // Update progress bar
+            const percent = Math.round((i / pdf.numPages) * 100);
+            progressFill.style.width = percent + "%";
+            status.innerText = `Scanning page ${i} of ${pdf.numPages}...`;
+            
+            // Small pause to let UI update (prevents browser freezing)
+            await new Promise(r => setTimeout(r, 0));
+
+            const page = await pdf.getPage(i);
+            const textContent = await page.getTextContent();
+            const items = textContent.items.map(item => item.str.trim()).filter(str => str.length > 0);
+            const fullPageText = items.join(" ");
+
+            // --- LOGIC COPIED FROM PREVIOUS SOLUTION ---
+            
+            let foundFullHeader = false;
+            // 1. Check for Full Header (CS1002,BAI-1A)
+            for (let k = 0; k < 20 && k < items.length; k++) {
+                if (/^[A-Z]{2}\d{4}\s*,\s*[A-Z0-9-]+$/.test(items[k])) {
+                    foundFullHeader = true;
+                    const parts = items[k].split(',');
+                    context.section = parts[1].trim();
+                    if (items[k+1]) context.teacher = items[k+1];
+                    if (items[k+2]) context.subject = items[k+2];
+                    
+                    const roomMatch = fullPageText.match(/(AB\d+Room\w*\s?\d*|Lab\s?\d+|Auditorium)/i);
+                    if (roomMatch) context.room = roomMatch[0];
+                    break; 
+                }
+            }
+
+            // 2. Check for Short Header (Continuation)
+            if (!foundFullHeader) {
+                const shortHeaderMatch = fullPageText.match(/'([A-Z]{2}\d{4}\s*,\s*[A-Z0-9-]+)'/);
+                if (shortHeaderMatch) {
+                    const currentSection = shortHeaderMatch[1].split(',')[1].trim();
+                    const roomMatch = fullPageText.match(/(AB\d+Room\w*\s?\d*|Lab\s?\d+|Auditorium)/i);
+                    if (roomMatch) context.room = roomMatch[0];
+                    if (context.section !== currentSection) {
+                        context.section = currentSection;
+                    }
+                }
+            }
+
+            // 3. Extract Students
+            for (let j = 0; j < items.length; j++) {
+                const item = items[j];
+                if (/^\d{2}[A-Z]{1}-\d{4}$/.test(item)) {
+                    const rollNo = item;
+                    let name = "Unknown";
+                    for (let k = 1; k <= 6; k++) {
+                        if (j + k >= items.length) break;
+                        const nextItem = items[j + k];
+                        if (/^\d+$/.test(nextItem)) continue; 
+                        if (nextItem.length <= 2) continue;   
+                        if (['Sign', 'Tick only', 'Declaration', 'MS', 'Page', 'Invigilator'].includes(nextItem)) continue;
+                        name = nextItem;
+                        break;
+                    }
+                    allStudents.push({ 
+                        roll: rollNo, name: name, 
+                        room: context.room, section: context.section, 
+                        subject: context.subject, teacher: context.teacher 
+                    });
+                }
+            }
+        }
+
+        // DONE! Download File
+        status.innerText = `✅ Done! Extracted ${allStudents.length} students. Downloading data.json...`;
+        
+        const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(allStudents));
+        const downloadAnchorNode = document.createElement('a');
+        downloadAnchorNode.setAttribute("href", dataStr);
+        downloadAnchorNode.setAttribute("download", "data.json");
+        document.body.appendChild(downloadAnchorNode);
+        downloadAnchorNode.click();
+        downloadAnchorNode.remove();
+    });
+</script>
+
+</body>
+</html>
